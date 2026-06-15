@@ -9,6 +9,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.capcut_client import CapCutTTSClient, get_tts_client
@@ -89,6 +90,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# API v1 Router
+api_v1 = APIRouter(prefix="/api/v1")
+
 
 class TTSRequest(BaseModel):
     """Request model for TTS synthesis."""
@@ -124,7 +128,7 @@ async def health_check():
     return HealthResponse(status="ok", version="0.1.0")
 
 
-@app.post("/tts", response_model=TTSResponse, tags=["TTS"])
+@api_v1.post("/tts", response_model=TTSResponse, tags=["TTS"])
 async def synthesize_speech(request: TTSRequest):
     """
     Synthesize text to speech and upload to S3.
@@ -183,7 +187,7 @@ async def synthesize_speech(request: TTSRequest):
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
-@app.get("/voices", tags=["TTS"])
+@api_v1.get("/voices", tags=["TTS"])
 async def list_voices():
     """List available default voices."""
     settings = get_settings()
@@ -207,7 +211,7 @@ class CleanupResponse(BaseModel):
     errors: list[str]
 
 
-@app.post("/cleanup", response_model=CleanupResponse, tags=["Admin"])
+@api_v1.post("/cleanup", response_model=CleanupResponse, tags=["Admin"])
 async def trigger_cleanup(max_age_days: int = 7):
     """
     Manually trigger cleanup of old TTS files.
@@ -217,6 +221,10 @@ async def trigger_cleanup(max_age_days: int = 7):
     s3_client = get_s3_client()
     result = await s3_client.cleanup_old_files(prefix="tts/", max_age_days=max_age_days)
     return CleanupResponse(**result)
+
+
+# Include router
+app.include_router(api_v1)
 
 
 if __name__ == "__main__":
