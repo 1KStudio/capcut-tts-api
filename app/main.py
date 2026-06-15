@@ -141,6 +141,7 @@ async def synthesize_speech(request: TTSRequest):
     - **s3_prefix**: S3 key prefix (default: tts)
 
     Returns public URL of the generated audio file.
+    If file already exists on S3, returns cached URL without regenerating.
     """
     settings = get_settings()
     tts_client: CapCutTTSClient = get_tts_client()
@@ -155,9 +156,21 @@ async def synthesize_speech(request: TTSRequest):
         if request.voice:
             voice = request.voice
 
-    # Generate S3 key
-    content_hash = hashlib.md5(request.text.encode()).hexdigest()[:8]
-    s3_key = f"{request.s3_prefix}/{request.language}/{uuid.uuid4().hex[:8]}_{content_hash}.mp3"
+    # Generate S3 key from hash of normalized text (lowercase + trim)
+    normalized_text = request.text.lower().strip()
+    content_hash = hashlib.md5(normalized_text.encode()).hexdigest()
+    s3_key = f"{request.s3_prefix}/{request.language}/{voice}_{content_hash}.mp3"
+
+    # Check if file already exists on S3 (cache hit)
+    if await s3_client.file_exists(s3_key):
+        url = s3_client.get_public_url(s3_key)
+        return TTSResponse(
+            url=url,
+            duration_ms=0,  # Unknown for cached files
+            speaker_id=voice,
+            text=request.text,
+            s3_key=s3_key,
+        )
 
     try:
         # Synthesize speech

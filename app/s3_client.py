@@ -52,6 +52,15 @@ class S3Client:
         """Get the public URL for an object."""
         return f"{self.public_url}/{key}"
 
+    async def file_exists(self, key: str) -> bool:
+        """Check if a file exists in S3."""
+        try:
+            async with self._session.client(**self._get_client_kwargs()) as client:
+                await client.head_object(Bucket=self.bucket_name, Key=key)
+            return True
+        except Exception:
+            return False
+
     async def cleanup_old_files(self, prefix: str = "tts/", max_age_days: int = 7) -> dict:
         """
         Delete files older than max_age_days from bucket.
