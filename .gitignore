@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test outputs
+test_*.mp3
+test_*.txt
+blauberry_*.mp3
+tts_*.json
+device_*.json
+
+# OS
+.DS_Store
+Thumbs.db
