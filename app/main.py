@@ -1,6 +1,8 @@
 """CapCut TTS API Service - FastAPI application."""
 
+import asyncio
 import hashlib
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -13,13 +15,60 @@ from app.capcut_client import CapCutTTSClient, get_tts_client
 from app.config import get_settings
 from app.s3_client import S3Client, get_s3_client
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# Cleanup task
+cleanup_task: Optional[asyncio.Task] = None
+
+
+async def cleanup_job():
+    """Background job to cleanup old TTS files from S3."""
+    s3_client = get_s3_client()
+    
+    while True:
+        try:
+            # Wait 1 hour
+            await asyncio.sleep(3600)
+            
+            # Run cleanup
+            logger.info("Running S3 cleanup job...")
+            result = await s3_client.cleanup_old_files(prefix="tts/", max_age_days=7)
+            logger.info(f"Cleanup completed: deleted {result['deleted']} files")
+            
+            if result["errors"]:
+                logger.warning(f"Cleanup errors: {result['errors'][:5]}")
+                
+        except asyncio.CancelledError:
+            logger.info("Cleanup job cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Cleanup job error: {e}")
+            # Continue running, will retry next hour
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
-    # Startup
+    global cleanup_task
+    
+    # Startup - start cleanup background task
+    cleanup_task = asyncio.create_task(cleanup_job())
+    logger.info("Cleanup background task started (runs every 1h, deletes files > 7 days)")
+    
     yield
-    # Shutdown
+    
+    # Shutdown - cancel cleanup task
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+    
+    # Close TTS client
     tts_client = get_tts_client()
     await tts_client.close()
 
@@ -150,6 +199,24 @@ async def list_voices():
             "name": "German default",
         },
     }
+
+
+class CleanupResponse(BaseModel):
+    """Cleanup response."""
+    deleted: int
+    errors: list[str]
+
+
+@app.post("/cleanup", response_model=CleanupResponse, tags=["Admin"])
+async def trigger_cleanup(max_age_days: int = 7):
+    """
+    Manually trigger cleanup of old TTS files.
+    
+    - **max_age_days**: Delete files older than this many days (default: 7)
+    """
+    s3_client = get_s3_client()
+    result = await s3_client.cleanup_old_files(prefix="tts/", max_age_days=max_age_days)
+    return CleanupResponse(**result)
 
 
 if __name__ == "__main__":

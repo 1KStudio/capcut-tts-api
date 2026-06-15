@@ -1,10 +1,14 @@
 """Async S3-compatible client for Cloudflare R2 storage."""
 
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import aioboto3
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class S3Client:
@@ -47,6 +51,77 @@ class S3Client:
     def get_public_url(self, key: str) -> str:
         """Get the public URL for an object."""
         return f"{self.public_url}/{key}"
+
+    async def cleanup_old_files(self, prefix: str = "tts/", max_age_days: int = 7) -> dict:
+        """
+        Delete files older than max_age_days from bucket.
+        
+        Args:
+            prefix: S3 key prefix to scan (default: "tts/")
+            max_age_days: Delete files older than this many days
+            
+        Returns:
+            Dict with deleted count and any errors
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        deleted = 0
+        errors = []
+        
+        try:
+            async with self._session.client(**self._get_client_kwargs()) as client:
+                # List all objects with prefix
+                paginator = client.get_paginator("list_objects_v2")
+                
+                keys_to_delete = []
+                
+                async for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+                    contents = page.get("Contents", [])
+                    
+                    for obj in contents:
+                        last_modified = obj.get("LastModified")
+                        if last_modified and last_modified < cutoff:
+                            keys_to_delete.append({"Key": obj["Key"]})
+                            
+                            # Delete in batches of 1000 (S3 limit)
+                            if len(keys_to_delete) >= 1000:
+                                result = await self._delete_batch(client, keys_to_delete)
+                                deleted += result["deleted"]
+                                errors.extend(result["errors"])
+                                keys_to_delete = []
+                
+                # Delete remaining
+                if keys_to_delete:
+                    result = await self._delete_batch(client, keys_to_delete)
+                    deleted += result["deleted"]
+                    errors.extend(result["errors"])
+                
+                logger.info(f"Cleanup: deleted {deleted} files older than {max_age_days} days")
+                
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
+            errors.append(str(e))
+        
+        return {"deleted": deleted, "errors": errors}
+    
+    async def _delete_batch(self, client, keys: list) -> dict:
+        """Delete a batch of objects from S3."""
+        deleted = 0
+        errors = []
+        
+        try:
+            response = await client.delete_objects(
+                Bucket=self.bucket_name,
+                Delete={"Objects": keys, "Quiet": True}
+            )
+            deleted = len(keys) - len(response.get("Errors", []))
+            
+            for err in response.get("Errors", []):
+                errors.append(f"{err['Key']}: {err.get('Message', 'unknown')}")
+                
+        except Exception as e:
+            errors.append(f"Batch delete failed: {e}")
+        
+        return {"deleted": deleted, "errors": errors}
 
 
 _s3_client: Optional[S3Client] = None
